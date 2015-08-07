@@ -1,541 +1,375 @@
 /*
  * INFORMER
- * processes forms. In particular, it generates JSON and sends that
- * to the form's target via the form's method.
  *
- * It does a few cool tricks that rely on nothing more than ordinary
- * and ordinary-looking HTML attributes.
+ * This module processes forms. Its main function is to generate an
+ * object representing the form data.
  *
- * Typical usage:
- * - create a form in the normal way, using all the normal attributes
- * - on that page, call `new Informer()`, passing it an object with
- *   keys `region` and `target`, both containing elements.
- *   The `region` element is optional. It indicates the parent element
- *   of all the elements Informer should act on. If no `region` is
- *   given, then the default will be the `document`.
- *   The `target` element is not *really* optional, but *technically*
- *   is. It indicates where to put the return from the server after the
- *   forms are submitted. If none is given, then an element with ID
- *   'work-space' will be assumed.
- * - when the form is submited, Informer will gather the form's values
- *   into an object, the keys being the `name`s of the input elements,
- *   and pass them as JSON to the server. The JSON will be keyed to
- *   the form's `name` or `id` attribute, if they exist, or `json` if
- *   neither do. The form's `method` and `target` attributes determine
- *   where and how the values are sent.
- * - the return from the server is made the innerHTML of the `target`
- *   element.
+ * So when this form is submitted:
+ * <form name="new-user" action="/api/users" method="post" onsubmit="Informer.submit(this)" onreturn="handler">
+ *   <input name="email" value="what@evv.err" />
+ *   <input name="password" value="so clever" />
+ *   <input type="submit" name="submit" value="Make it so" />
+ * </form>
+ * it will POST this object:
+ * {new-user:{email:"what@evv.err",password:"so clever"},submit:"Make it so"}
+ * to `/api/users`, and then pass the return to `handler`.
  *
- * Special stuff:
- * - You can add an `initAction` key to the initializing parameter and,
- *   if that is a valid function name in Informer, then it will be called
- *   at the end of the `init` function.
- * - You can add a `group` attribute to inputs. Values in `group`ed
- *   elements will be collected into sub-objects keyed to the name of
- *   the `group`.
- * - You can add an `autosubmit` attribute to inputs. These inputs will
- *   listen for `change` events and submit the form when triggered.
- * - You can add an `action` attribute to the form element. If the
- *   value of this attribute is the name of a function in Informer, then
- *   that function will be called when the form is submitted.
- * - You can chain the `autosubmit` and `action` features together to
- *   do cool things.
- * - You can add an `onreturn` attribute to form elements. If the value
- *   of that attribute is the name of a function in Informer, then that
- *   function will be fired after the form is submitted. If the server
- *   returned anything, then that will be available in the `this.return`
- *   variable.
- * - You can add a `terminal` attribute to form elements. If the value
- *   of that attribute is the `id` of an element, then that element
- *   will receive the return from the form, acting as that form's
- *   `target` -- the instance's `target` element will not be changed.
+ * The `collect` and `submit` methods both generate the data object.
+ * The `collect` method will return it, and `submit` will send it to
+ * the URL indicated by the form's `action` attribute via the method
+ * specified by the form's `method` attribute.
  *
+ * Values from the form can be grouped with a `group` attribute on
+ * the input elements, and those groups can be arbitrarily complex
+ * by separating the group names with a colon. So these inputs:
+ * <input name="email" group="login" value="what@evv.err" />
+ * <input name="password" group="login" value="so clever" />
+ * <input name="f_name" group="personal" value="Taylor" />
+ * <input name="l_name" group="personal" value="Swift" />
+ * will generate:
+ * {login: {email: "what@evv.err", password: "so clever"} },
+ * {personal: {f_name: "Taylor", l_name: "Swift"} }
+ * and these inputs:
+ * <input name="email" group="user:login" value="what@evv.err" />
+ * <input name="password" group="user:login" value="so clever" />
+ * <input name="f_name" group="user:personal" value="Taylor" />
+ * <input name="l_name" group="user:personal" value="Swift" />
+ * will generate:
+ * {user: {login: {email: "what@evv.err", password: "so clever"} },
+ *        {personal: {f_name: "Taylor", l_name: "Swift"} } }
  *
+ * If the form has an `onreturn` attribute (that name is set by the
+ * value of `conf.elem_callback_attr`), then after it is submitted,
+ * the server's return will be passed to that function.
+ *
+ * The `trigger` method will read the form's `action` attribute
+ * (specified in `conf.elem_trigger_attr`) and, if that attribute
+ * names a function, send the form element to that function.
+ *
+ * This module requires http.js to handle the requests.
+ *
+ * TODO:
+ * - Input validation
+ * - Error handling
  */
 
+var Informer = (function () {
 
-function Informer(params) {
-
-    /*
-     * Custom functions.
-     * Add any functions you'll want to call `action` here.
-     */
-
-    this.startup = function() {
-        this.caller = document.getElementById('form-select-main');
-        this.displayCalledForm();
-        this.reset();
+    var conf = {
+        // If this form attribute is a function name, that function
+        // will be sent the triggering form element.
+        elem_trigger_attr: 'action',
+        // A form can specify a function name in this attribute and
+        // it will be sent the server return after the form submits.
+        elem_callback_attr: 'onreturn',
+        // If the form has no `name` or `id`, then this will become
+        // the key for the values.
+        unnamed_form_key: 'json'
     };
 
+    // These are the `tagName`s to scan for in the form.
+    var input_types = [
+        'input', 'select', 'textarea'
+    ];
+
+    // These are the attributes to pull from the elements.
+    // They will become keys to the element's value object.
+    // The 'value' is assumed and doesn't need to be included.
+    var value_attributes = [
+        'name', 'group'
+    ];
+
+    // This is the most recently submitted form. It's
+    // publicly accessible, useful for callback methods.
+    var last_action_form = null;
+
+    // This triggers logging.
+    var verbose = false;
 
 
-    this.displayCalledForm = function() {
-        this.gatherTheValues();
 
-        var target = false,
-            dispswap = false;
-
-        if (this.values['work-action'] == 'select') {
-            if (this.values['work-target'] == 'venue') {
-                target = 'form-select-venue';
-            }
-            else if (this.values['work-target'] == 'event') {
-                target = 'form-select-event';
-            }
-            else if (this.values['work-target'] == 'user') {
-                target = 'form-select-user';
-            }
-            dispswap = 'dispplural';
+    function log(message) {
+        if (verbose) {
+            console.log(message);
         }
-        else if (this.values['work-action'] == 'create') {
-            if (this.values['work-target'] == 'venue') {
-                target = 'form-create-venue';
-            }
-            else if (this.values['work-target'] == 'event') {
-                target = 'form-create-event';
-            }
-            else if (this.values['work-target'] == 'user') {
-                target = 'form-create-user';
-            }
-            dispswap = 'dispsingular';
+    }
+
+
+
+    function checkSubmitEvent() {
+        if (window.event.type == 'submit') {
+            window.event.preventDefault();
+        }
+    }
+
+
+
+    function handleSubmission(form) {
+        if ((url = form.getAttribute('action')) &&
+            (method = form.getAttribute('method')) &&
+            (callback = stringToFunction(form.getAttribute(conf.elem_callback_attr)))) {
+
+            var vals = toObject(form, JSON.stringify);
+            last_action_form = form;
+
+            Http[method]({
+                url: url,
+                params: vals,
+                callback: callback
+            });
         }
 
-        if (target) {
-            var upform = document.getElementById(target);
-            var forms = this.region.getElementsByTagName('form');
-            for (var o = 0; o < forms.length; o++) {
-                if ((forms[o] !== this.caller) &&
-                    (forms[o] !== upform)) {
-                    forms[o].style.display = 'none';
-                }
-            }
+        else {
+            // If `verbose` is false, then this will silently fail, and that is the suck.
+            console.log("To submit, the form element needs these attributes: `action`, being the URL to send the data to; `method`, being the HTTP verb to use, either 'get' or 'post'; and `onreturn`, being the name of a function that will handle the return from the server.");
+        }
+    }
 
-            upform.style.display = 'block';
+
+
+    function handleAction(form) {
+        if ((func = form.getAttribute(conf.elem_trigger_attr)) &&
+            (winf = stringToFunction(func)) &&
+            (typeof winf == 'function')) {
+            last_action_form = form;
+            winf(form);
         }
 
-        if (dispswap) {
-            var opts = this.caller['work-target'];
-            for (var o = 0; o < opts.length; o++) {
-                if (swap = opts[o].getAttribute(dispswap)) {
-                    opts[o].text = swap;
-                }
-            }
+        else {
+            // Same as the above.
+            console.log("The form's `action` attribute doesn't name a function callable by Informer.");
         }
-    };
+    }
 
 
 
-    this.blammo = function() {
-        console.log('blammo');
-        if (this.return === null) {
-            console.log("return is null");
+    function toObject(form, transform) {
+        var key = ((k = form.getAttribute('name')) || (k = form.getAttribute('id'))) || null;
+        if (!key) {
+            key = conf.unnamed_form_key;
+            log("No `name` or `id` attribute on the form, using default key '"+key+"'.");
+        }
+
+        var vals = { };
+        if (typeof transform == 'function') {
+            vals[key] = transform(gatherTheValues(form));
         }
         else {
-            console.log("return is not null");
-        }
-    };
-
-
-
-    // NEED TO CHECK FOR NEW SCRIPT ELEMENTS
-    this.successor = function() {
-        var target = document.getElementById(this.caller.getAttribute('terminal'));
-        target.innerHTML = this.return;
-        this.checkForScripts(target);
-    };
-
-
-
-
-
-
-    /*
-     * Library functions.
-     * You shouldn't need to edit any of these.
-     */
-
-    this.init = function(pobj) {
-        // The region receives the response.
-        if ('region' in pobj) {
-            this.region = pobj.region;
-        } else {
-            this.region = document;
+            vals[key] = gatherTheValues(form);
         }
 
-        // The target receives the response.
-        if ('target' in pobj) {
-            this.target = pobj.target;
-        } else {
-            this.target = document.getElementById('work-space');
-        }
-
-        // This will become the current form.
-        this.caller = null;
-        // This will become the current form's values.
-        this.values = null;
-        // This will become the return from the server.
-        this.return = null;
-
-        this.inputTypes = ['input', 'select', 'textarea'];
-
-        this.addListeners();
-
-        if (('initAction' in pobj) && (this[pobj.initAction])) {
-            this[pobj.initAction]();
-        }
-    };
+        return vals;
+    }
 
 
 
-    this.reset = function() {
-        this.caller = null;
-        this.values = null;
-        this.return = null;
-    };
+    function gatherTheValues(form) {
+        last_action_form = form;
+        return groupValues(elemsToObjs(form));
+    }
 
 
 
-    this.addListeners = function() {
-        var forms = this.region.getElementsByTagName('form');
+    function elemsToObjs(form) {
+        var vals = [ ];
 
-        for (var o = 0; o < forms.length; o++) {
-            forms[o].addEventListener('submit', this, false);
-
-            for (var i = 0; i < this.inputTypes.length; i++) {
-                var elems = forms[o].getElementsByTagName(this.inputTypes[i]);
-                for (var u = 0; u < elems.length; u++) {
-                    if (elems[u].getAttribute('autosubmit')) {
-                        elems[u].addEventListener('change', this, false);
-                    }
-                }
+        for (var o = 0, m = input_types.length; o < m; o++) {
+            var elems = form.getElementsByTagName(input_types[o]);
+            for (var i = 0, n = elems.length; i < n; i++) {
+                vals.push(elemToObject(elems[i]));
             }
         }
-    };
 
+        log("The form's value objects:");
+        log(vals);
 
-    this.removeListeners = function() {
-        var forms = this.region.getElementsByTagName('form');
-        for (var o = 0; o < forms.length; o++) {
-            forms[o].removeEventListener('submit');
-
-            for (var i = 0; i < this.inputTypes.length; i++) {
-                var elems = forms[o].getElementsByTagName(this.inputTypes[i]);
-                for (var u = 0; u < elems.length; u++) {
-                    if (elems[u].getAttribute('autosubmit')) {
-                        elems[u].removeEventListener('change');
-                    }
-                }
-            }
-        }
-    };
+        return vals;
+    }
 
 
 
-    this.handleEvent = function(evt) {
-        if (!evt) {var evt = window.event;}
-        this.evt = evt;
+    // Pass this an array of returns from `elemsToObjs`.
+    function groupValues(val_objs) {
+        log("Grouping values:");
+        log(val_objs);
 
-        this.evt.stopPropagation();
-        this.evt.preventDefault();
+        var vals_struct = { };
 
-        if (this.evt.type == 'change') {
-            this.actOnCaller();
-        }
-        else if (this.evt.type == 'submit') {
-            this.procCaller();
-        }
-        else {
-            console.log("Unhandled event type: " + this.evt.type);
-        }
-    };
+        for (var o = 0, m = val_objs.length; o < m; o++) {
+            if (group_str = val_objs[o]['group']) {
+                log("'"+val_objs[o]['name']+"' group string: " + group_str);
 
+                var form_val = { };
+                form_val[val_objs[o]['name']] = val_objs[o]['value'];
 
+                var val_struct = buildNestedObject(group_str.split(':'),
+                                                   form_val);
 
-    this.actOnCaller = function() {
-        if (this.getCallerFromEvent()) {
-            if (act = this.caller.getAttribute('action')) {
-                if (this[act]) {
-                    this[act]();
-                }
-            }
-        }
-    };
+                log("Built nested object:");
+                log(val_struct);
 
-
-
-    this.procCaller = function() {
-        if (this.getCallerFromEvent()) {
-            // For custom submit actions.
-            if ((act = this.caller.getAttribute('action')) && (this[act])){
-                this[act]();
+                vals_struct = mergeObjects(vals_struct, val_struct);
             }
 
-            // It would be possible to pass a custom
-            // action to Informer on initialization.
-
-            // Else, the standard.
             else {
-                this.gatherTheValues();
-                if (this.values !== null) {
-                    this.submitTheValues();
+                log("'"+val_objs[o]['name']+"' has no group, adding its value to the structure base.");
+                vals_struct[val_objs[o]['name']] = val_objs[o]['value'];
+            }
+        }
+
+        log("Structured values:");
+        log(vals_struct);
+
+        return vals_struct;
+    }
+
+
+
+    function elemToObject(elem, attrs) {
+        attrs = (typeof attrs == 'undefined') ? value_attributes : attrs;
+
+        log("Converting element to value object:");
+        log(elem);
+
+        var obj = { };
+        obj['value'] = elem.value;
+
+        for (var o = 0, m = attrs.length; o < m; o++) {
+            obj[attrs[o]] = elem.getAttribute(attrs[o]) || false;
+        }
+
+        log("Built value object:");
+        log(obj);
+
+        return obj;
+    }
+
+
+
+    /*
+     * These functions are essential to Informer but
+     * might be useful as general utility functions.
+     */
+
+    // This is a modified version of the procedure found here:
+    // http://stackoverflow.com/questions/912596/how-to-turn-a-string-into-a-javascript-function-call
+    // Rather than produce a callable function and then call it with supplied arguments,
+    // this just returns the function.
+    function stringToFunction(functionName, context) {
+        context = (typeof context == 'undefined') ? window : context;
+
+        var namespaces = functionName.split('.');
+        var func = namespaces.pop();
+
+        for (var o = 0, m = namespaces.length; o < m; o++) {
+            context = context[namespaces[o]];
+        }
+
+        return context[func];
+    }
+
+
+
+    function buildNestedObject(keys, end_val) {
+        var ret = { };
+
+        if (keys.length == 1) {
+            if (keys[0] in ret) {
+                if (!(typeof end_val == 'undefined')) {
+                    if (end_val.constructor == Object) {
+                        ret[keys[0]] = mergeObjects(ret[keys[0]], end_val);
+                    }
+                    else {
+                        ret[keys[0]] = end_val;
+                    }
+                }
+            }
+            else {
+                ret[keys[0]] = (typeof end_val == 'undefined') ? { } : end_val;
+            }
+        }
+        else {
+            ret[keys[0]] = buildNestedObject(keys.slice(1), end_val);
+        }
+
+        return ret;
+    }
+
+
+
+    function mergeObjects(obj1, obj2) {
+        for (var key in obj2) {
+            if (obj2.hasOwnProperty(key)) {
+                if ((obj1[key]) &&
+                    (obj1[key].constructor == Object) &&
+                    (obj2[key].constructor == Object)) {
+                    obj1[key] = mergeObjects(obj1[key], obj2[key]);
                 }
                 else {
-                    console.log("bork");
+                    obj1[key] = obj2[key];
                 }
             }
         }
-    };
+
+        return obj1;
+    }
 
 
 
-    this.getCallerFromEvent = function() {
-        this.caller = this.evt.target;
-        while ((this.caller !== document.body) &&
-               (this.caller.tagName.toLowerCase() !== 'form')) {
-            this.caller = this.caller.parentNode;
+    function getFormFromEvent(evt) {
+        var event = (evt) ? evt : window.event;
+        var elem = event.target || event.srcElement;
+        var form = getNearestParent(elem, 'form');
+        return form;
+    }
+
+
+
+    function getNearestParent(source, tagname) {
+        var elem = source;
+
+        while ((!elem.tagName) ||
+               ((elem.tagName.toLowerCase() != tagname) &&
+                (elem != document.body))) {
+            elem = elem.parentNode;
         }
 
-        var ret = (this.caller == document.body) ? false : true;
-        return ret;
-    };
+        if (elem == document.body) {return false;}
+        else {return elem;}
+    }
 
 
 
-    // Inputs with a common group attribute will become an object.
-    // The key of the object will be the group name, and the keys
-    // of each value within the object will be the input names.
-    // Groups with a common pargroup attribute will become children
-    // of an object, the key of which will be the name of the pargroup.
-
-    // NOTE: one flaw of this function as it exists is that groups are
-    // gathered irrespective of pargroups, and the latest-occurring pargroup
-    // of a group member becomes the pargroup of the group, and only then are
-    // the pargroups created/moved. So if hypothetical keys 'date_start' and
-    // 'date_end' both need subgroups named 'day', then
-    // this will fail to gather as expected. #TODO
-
-    // The `group` attribute names the object that inputs will be gathered into.
-    // The `pargroup` attribute names the object that a group will be gathered into.
-    // A `pargroup` without a `group` will not be recognized.
-    // `group` gathers items. `pargroup` gathers groups.
-    this.gatherTheValues = function() {
-        // NOTE: http://javascript.info/tutorial/objects#object-variables-are-references
-        // In javascript, object variables are references. So the changes made to `collated`
-        // by `addChildToObject`, despite the differences in variables names and scope, etc,
-        // will be made in-place.
-        var caller = this.caller,
-            inputTypes = this.inputTypes,
-            elements = [ ],
-            values = { },
-            added = false;
 
 
-        function buildElementsArray() {
-            for (var i = 0; i < inputTypes.length; i++) {
-                var elems = caller.getElementsByTagName(inputTypes[i]);
-                for (var o = 0; o < elems.length; o++) {
-                    var elem = { };
-                    elem['name'] = elems[o].getAttribute('name');
-                    elem['val'] = elems[o].value;
-                    elem['group'] = elems[o].getAttribute('group') || false;
-                    elem['pargroup'] = elems[o].getAttribute('pargroup') || false;
-                    elements.push(elem);
-                }
-            }
-            // console.log("Elements array:");
-            // console.log(elements);
+    /*
+     * Public methods.
+     */
+    return {
+
+        collect: function(form) {
+            checkSubmitEvent();
+            return gatherTheValues(form);
+        },
+
+        submit: function(form) {
+            checkSubmitEvent();
+            handleSubmission(form);
+        },
+
+        trigger: function(evt) {
+            var form = getFormFromEvent(evt);
+            if (form) {handleAction(form);}
+        },
+
+        tagnames: function() {
+            return input_types;
+        },
+
+        form: function() {
+            return last_action_form;
         }
 
+    }
 
-
-        function loopOnElements(baseIsSet) {
-            baseIsSet = (typeof baseIsSet == 'undefined') ? false : true;
-            var recur = false;
-
-            for (var o = 0; o < elements.length; o++) {
-                // This because `delete` just sets an element to `undefined`.
-                if (elements[o]) {
-                    added = false;
-                    // console.log(" ("+ recur +" / " +added+")Checking " + elements[o]['name'] + " for pargroup:" + elements[o]['pargroup'] + " and group: " + elements[o]['group']);
-                    if ((!elements[o]['pargroup']) ||
-                        ((elements[o]['pargroup']) && (baseIsSet))) {
-                        addElementToValues(elements[o], values);
-                    }
-                    if (added) {
-                        // console.log("Added, deleting");
-                        delete elements[o];
-                        recur = true;
-                    }
-                }
-            }
-
-            if (recur) {
-                // console.log("Looping again");
-                loopOnElements(true);
-            }
-        }
-
-
-
-        // In this functions, `vals` will be either `values`, which is the main return
-        // from this meta-function, or one of the children of `values`. But in JS,
-        // objects are references, so modifying `vals`, whether at the time it indicates
-        // `values` or one of its children, will modify `values`. This enables a fairly
-        // tidy recursive scaning of `values`.
-        // It will almost always set `added` to true. The exception is when an `elem`'s
-        // `pargroup` doesn't exist in the `vals`: in this case, `added` won't be changed.
-        function addElementToValues(elem, vals) {
-            // console.log("Adding element?");
-            // console.log(elem);
-            if (elem['pargroup']) {
-                scan:
-                for (var key in vals) {
-                    if (vals.hasOwnProperty(key)) {
-                        if (key == elem['pargroup']) {
-                            // console.log("Found " + key + " for " + elem['group'] + " :: " + elem['name'] + '=' + elem['val']);
-                            if (!vals[elem['pargroup']][elem['group']]) {
-                                vals[elem['pargroup']][elem['group']] = { };
-                            }
-                            vals[elem['pargroup']][elem['group']][elem['name']] = elem['val'];
-                            added = true;
-                            break scan;
-                        }
-                        else if (typeof vals[key] == 'object') {
-                            // console.log("Recurring into: " + vals[key]);
-                            addElementToValues(elem, vals[key]);
-                        }
-                    }
-                }
-            }
-
-            else if (elem['group']) {
-                if (!vals[elem['group']]) {
-                    vals[elem['group']] = { };
-                }
-                vals[elem['group']][elem['name']] = elem['val'];
-                added = true;
-            }
-
-            else {
-                vals[elem['name']] = elem['val'];
-                added = true;
-            }
-        }
-
-
-
-        function displayErrors() {
-            var orphans = [ ];
-            for (var o = 0; o < elements.length; o++) {
-                if (elements[o]) {
-                    orphans.push(elements[o]);
-                }
-            }
-
-            if (orphans.length > 0) {
-                console.log("WARNING: potential information loss.");
-                console.log("There are " + orphans.length + " unnecessary pargroup attributes. They are unnecessary because they do not specify parent groups in the form hierarchy.");
-                console.log("These pargroups do not occur in form's hierarchy:");
-                for (var o = 0; o < orphans.length; o++) {
-                    console.log(orphans[o]['pargroup']);
-                }
-                console.log("Since they do not specify a parent group, it would be best to remove the pargroup attributes from the elements and just use the group attribute instead. As it is, their values are not included in the form's values object");
-            }
-        }
-
-
-        // This is the main routine of this meta-function.
-        buildElementsArray();
-        loopOnElements();
-        // This is optional.
-        displayErrors();
-
-        this.values = values;
-    };
-
-
-
-    this.submitTheValues = function() {
-        var key = 'json';
-        if (k = this.caller.getAttribute('name')) {
-            key = k;
-        } else if (k = this.caller.getAttribute('id')) {
-            key = k;
-        }
-
-        console.log(k+"="+JSON.stringify(this.values));
-        console.log("Going to: " + this.caller.getAttribute('action') + " via " + this.caller.getAttribute('method'));
-        // return;
-
-        var passData = { };
-        passData[key] = JSON.stringify(this.values);
-
-        var handler = this.handleTheReturn.bind(this);
-
-        /* The caller's method attribute will be "get" or "post",
-         * which are the names of the Http object's public methods. */
-        Http[this.caller.getAttribute('method').toLowerCase()]({
-            url: this.caller.getAttribute('action'),
-            params: passData,
-            callback: handler
-        });
-    };
-
-
-
-    this.handleTheReturn = function(ret) {
-        this.return = ret;
-
-        // For form-specific post-submit actions.
-        if ((act = this.caller.getAttribute('onreturn')) && (this[act])) {
-            this[act]();
-        }
-
-        // For form-specific target elements.
-        else if ((check = this.caller.getAttribute('terminal')) &&
-                 (dest = document.getElementById(check))) {
-            dest.innerHTML = this.return;
-            this.checkForScripts(dest);
-        }
-
-        // Else, the standard.
-        else {
-            this.target.innerHTML = ret;
-            this.checkForScripts();
-            // this.caller.reset();
-        }
-
-        this.reset();
-    };
-
-
-
-    // This function introduces an element of risk.
-    // But I think it's a risk worth taking.
-    this.checkForScripts = function(checko) {
-        var elem = (typeof checko == 'object')
-            ? checko
-            : this.target;
-
-        var scrs = elem.getElementsByTagName('script');
-        for (var i = 0; i < scrs.length; i++) {
-            eval(scrs[i].innerHTML);
-        }
-    };
-
-
-
-    // This needs to stay down here.
-    if (typeof params == 'object') {this.init(params);}
-    else {this.init({});}
-}
-
-
-
-
-// Array Remove - By John Resig (MIT Licensed)
-// Array.prototype.remove = function(from, to) {
-//   var rest = this.slice((to || from) + 1 || this.length);
-//   this.length = from < 0 ? this.length + from : from;
-//   return this.push.apply(this, rest);
-// };
+})();
