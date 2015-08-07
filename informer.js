@@ -64,8 +64,11 @@ var Informer = (function () {
         // it will be sent the server return after the form submits.
         elem_callback_attr: 'onreturn',
         // If the form has no `name` or `id`, then this will become
-        // the key for the values.
-        unnamed_form_key: 'json'
+        // the key for the values. If false, no key will be used.
+        unnamed_form_key: null,  // 'json'
+        // If you want to transform the data object before it gets
+        // sent, make this a function name. Else, null it.
+        data_transform_func: JSON.stringify
     };
 
     // These are the `tagName`s to scan for in the form.
@@ -85,7 +88,7 @@ var Informer = (function () {
     var last_action_form = null;
 
     // This triggers logging.
-    var verbose = false;
+    var verbose = true;
 
 
 
@@ -107,22 +110,26 @@ var Informer = (function () {
 
     function handleSubmission(form) {
         if ((url = form.getAttribute('action')) &&
-            (method = form.getAttribute('method')) &&
-            (callback = stringToFunction(form.getAttribute(conf.elem_callback_attr)))) {
+            (method = form.getAttribute('method'))) {
+            // This will return false if the parameter doesn't name
+            //  a function, which is an acceptable callback parameter.
+            var func = (chk = form.getAttribute(conf.elem_callback_attr))
+                ? stringToFunction(chk)
+                : null;
 
-            var vals = toObject(form, JSON.stringify);
+            var vals = toObject(form, conf.data_transform_func);
             last_action_form = form;
 
             Http[method]({
                 url: url,
                 params: vals,
-                callback: callback
+                callback: func
             });
         }
 
         else {
             // If `verbose` is false, then this will silently fail, and that is the suck.
-            console.log("To submit, the form element needs these attributes: `action`, being the URL to send the data to; `method`, being the HTTP verb to use, either 'get' or 'post'; and `onreturn`, being the name of a function that will handle the return from the server.");
+            console.log("To submit, the form element needs these attributes: `action`, being the URL to send the data to, and `method`, being the HTTP verb to use, either 'get' or 'post'");
         }
     }
 
@@ -145,18 +152,21 @@ var Informer = (function () {
 
 
     function toObject(form, transform) {
-        var key = ((k = form.getAttribute('name')) || (k = form.getAttribute('id'))) || null;
-        if (!key) {
-            key = conf.unnamed_form_key;
-            log("No `name` or `id` attribute on the form, using default key '"+key+"'.");
-        }
-
         var vals = { };
+        var key = ((k = form.getAttribute('name')) || (k = form.getAttribute('id'))) || conf.unnamed_form_key;
+
         if (typeof transform == 'function') {
-            vals[key] = transform(gatherTheValues(form));
+            var valobj = transform(gatherTheValues(form));
         }
         else {
-            vals[key] = gatherTheValues(form);
+            var valobj = gatherTheValues(form);
+        }
+
+        if (key) {
+            vals[key] = valobj;
+        }
+        else {
+            vals = valobj;
         }
 
         return vals;
@@ -266,7 +276,12 @@ var Informer = (function () {
             context = context[namespaces[o]];
         }
 
-        return context[func];
+        if (typeof context[func] == 'function') {
+            return context[func];
+        }
+        else {
+            return false;
+        }
     }
 
 
