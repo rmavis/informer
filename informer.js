@@ -17,7 +17,8 @@
  * The `collect` and `submit` methods both generate the data object.
  * The `collect` method will return it, and `submit` will send it to
  * the URL indicated by the form's `action` attribute via the method
- * specified by the form's `method` attribute.
+ * specified by the form's `method` attribute, as you might expect
+ * from those standard attributes.
  *
  * Values from the form can be grouped with a `group` attribute on
  * the input elements, and those groups can be arbitrarily complex
@@ -84,7 +85,7 @@ var Informer = (function () {
     var last_action_form = null;
 
     // This triggers logging.
-    var verbose = false;
+    var verbose = true;
 
 
 
