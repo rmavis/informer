@@ -85,7 +85,7 @@ var Informer = (function () {
     var last_action_form = null;
 
     // This triggers logging.
-    var verbose = true;
+    var verbose = false;
 
 
 
