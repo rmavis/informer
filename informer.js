@@ -5,6 +5,21 @@
  * object representing the form data.
  *
  * So when this form is submitted:
+ * <form action="/api/users" method="post" onsubmit="Informer.submit(this)">
+ *   <input name="email" value="what@evv.err" />
+ *   <input name="password" value="so clever" />
+ *   <input type="submit" name="submit" value="Make it so" />
+ * </form>
+ * it will POST the standard data
+ * email=what@evv.err&password=so clever&submit=Make it so
+ * to `/api/users`.
+ *
+ * But you can name the form and specify a data transformation
+ * function. If you do, the name will act as a key to the object
+ * representing the form data, and before that object is POSTED to
+ * the server, it will be transformed by the function. So if the
+ * transform function is `JSON.stringify`, then when this form is
+ * submitted:
  * <form name="new-user" action="/api/users" method="post" onsubmit="Informer.submit(this)" onreturn="handler">
  *   <input name="email" value="what@evv.err" />
  *   <input name="password" value="so clever" />
@@ -13,6 +28,10 @@
  * it will POST this object:
  * {new-user:{email:"what@evv.err",password:"so clever"},submit:"Make it so"}
  * to `/api/users`, and then pass the return to `handler`.
+ *
+ * So Informer is useful as a standard form handler but shines when
+ * used to generate more complex data objects and pass those objects
+ * to the server as JSON.
  *
  * The `collect` and `submit` methods both generate the data object.
  * The `collect` method will return it, and `submit` will send it to
