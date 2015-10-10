@@ -2,42 +2,69 @@
  * INFORMER
  *
  * This module processes forms. Its main function is to generate an
- * object representing the form data.
+ * object representing the form data. It can then handle that data
+ * in a variety of ways.
  *
- * So when this form is submitted:
+ *
+ * USAGE
+ *
+ * When this form is submitted:
  * <form action="/api/users" method="post" onsubmit="Informer.submit(this)">
  *   <input name="email" value="what@evv.err" />
  *   <input name="password" value="so clever" />
  *   <input type="submit" name="submit" value="Make it so" />
  * </form>
- * it will POST the standard data
- * email=what@evv.err&password=so clever&submit=Make it so
- * to `/api/users`.
  *
- * But you can name the form and specify a data transformation
- * function. If you do, the name will act as a key to the object
- * representing the form data, and before that object is POSTED to
- * the server, it will be transformed by the function. So if the
- * transform function is `JSON.stringify`, then when this form is
- * submitted:
- * <form name="new-user" action="/api/users" method="post" onsubmit="Informer.submit(this)" onreturn="handler">
+ * it will POST the standard data:
+ * email=what@evv.err&password=so%20&submit=Make%20it%20so
+ *
+ * to `/api/users`, then receive the response.
+ *
+ * But say you want to package the data as JSON before submitting
+ * it. You can gather the data from the form, use the name of the
+ * form itself as a key, and run the resulting data object through
+ * `JSON.stringify`.
+ *
+ * When this form is submitted:
+ * <form action="/api/users" method="post" onsubmit="Informer.submit(this)"
+ *  name="new-user" onreturn="handler">
  *   <input name="email" value="what@evv.err" />
  *   <input name="password" value="so clever" />
  *   <input type="submit" name="submit" value="Make it so" />
  * </form>
- * it will POST this object:
- * {new-user:{email:"what@evv.err",password:"so clever"},submit:"Make it so"}
- * to `/api/users`, and then pass the return to `handler`.
  *
- * So Informer is useful as a standard form handler but shines when
+ * it will build this JSON:
+ * {new-user:{email:"what@evv.err",password:"so clever"},
+ *  submit:"Make it so"}
+ *
+ * then POST that to `/api/users`, and then pass the return to
+ * the `handler` function.
+ *
+ * So Informer is fine as a standard form handler but shines when
  * used to generate more complex data objects and pass those objects
  * to the server as JSON.
  *
+ *
+ * DETAILS
+ *
+ * There are five public methods: `collect`, `submit`, `trigger`,
+ * `tagnames`, and `form`.
+ *
  * The `collect` and `submit` methods both generate the data object.
- * The `collect` method will return it, and `submit` will send it to
- * the URL indicated by the form's `action` attribute via the method
- * specified by the form's `method` attribute, as you might expect
- * from those standard attributes.
+ * The `collect` method will return that object, and `submit` will
+ * send it to the URL indicated by the form's `action` attribute via
+ * the method specified by the form's `method` attribute, as you
+ * might expect from those standard attributes. If a function is
+ * named in `conf.data_transform_func`, then the data object will be
+ * passed to that before submitting.
+ *
+ * The `trigger` method will parse the form, build a data object,
+ * and pass that object to the function named in the form's `action`
+ * attribute (if you'd like, you can specify a different attribute
+ * name in `conf.elem_attr_trigger`).
+ *
+ * The `tagnames` and `form` methods return the tagnames to read
+ * from the form and the last form read, respectively.
  *
  * Values from the form can be grouped with a `group` attribute on
  * the input elements, and those groups can be arbitrarily complex
@@ -46,82 +73,114 @@
  * <input name="password" group="login" value="so clever" />
  * <input name="f_name" group="personal" value="Taylor" />
  * <input name="l_name" group="personal" value="Swift" />
+ *
  * will generate:
  * {login: {email: "what@evv.err", password: "so clever"} },
  * {personal: {f_name: "Taylor", l_name: "Swift"} }
+ *
  * and these inputs:
  * <input name="email" group="user:login" value="what@evv.err" />
  * <input name="password" group="user:login" value="so clever" />
  * <input name="f_name" group="user:personal" value="Taylor" />
  * <input name="l_name" group="user:personal" value="Swift" />
+ *
  * will generate:
  * {user: {login: {email: "what@evv.err", password: "so clever"} },
  *        {personal: {f_name: "Taylor", l_name: "Swift"} } }
  *
  * If the form has an `onreturn` attribute (that name is set by the
- * value of `conf.elem_callback_attr`), then after it is submitted,
+ * value of `conf.elem_attr_callback`), then after it is submitted,
  * the server's return will be passed to that function.
  *
- * The `trigger` method will read the form's `action` attribute
- * (specified in `conf.elem_trigger_attr`) and, if that attribute
- * names a function, send the form element to that function.
  *
- * This module requires http.js to handle the requests.
+ * DEPENDENCIES
  *
- * TODO:
+ * - Http.js for handling the HTTP requests
+ * - Utils.js for various utility functions
+ *
+ *
+ * TODO
  * - Input validation
  * - Error handling
+ *
  */
 
 var Informer = (function () {
 
+    // For logging.
+    var verbose = false;
+
+
     var conf = {
-        // If this form attribute is a function name, that function
-        // will be sent the triggering form element.
-        elem_trigger_attr: 'action',
-        // A form can specify a function name in this attribute and
-        // it will be sent the server return after the form submits.
-        elem_callback_attr: 'onreturn',
+        // Instead of sending the form data to the server, it can be
+        // sent to a function. If you want to do that, then the form
+        // should name the function to call in this attribute.
+        elem_attr_trigger: 'action',
+
+        // After the form submits, a function can be called with the
+        // server's return. If you want to do that, then the form
+        // should name the function to call in this attribute.
+        elem_attr_callback: 'onreturn',
+
+        // If you want to transform the form data before sending it,
+        // make this a function name. If not, make it false.
+        data_transform_func: JSON.stringify,
+
         // If the form has no `name` or `id`, then this will become
-        // the key for the values. If false, no key will be used.
-        unnamed_form_key: null,  // 'json'
-        // If you want to transform the data object before it gets
-        // sent, make this a function name. Else, null it.
-        data_transform_func: JSON.stringify
+        // the key for the transformed data object. If false, no key
+        // will be used.
+        unnamed_form_key: null
     };
+
 
     // These are the `tagName`s to scan for in the form.
     var input_types = [
         'input', 'select', 'textarea'
     ];
 
-    // These are the attributes to pull from the elements.
-    // They will become keys to the element's value object.
-    // The 'value' is assumed and doesn't need to be included.
+
+    // These are the attributes to pull from the elements. They will
+    // become keys to the element's value object. The `value` is
+    // assumed and doesn't need to be included.
     var value_attributes = [
         'name', 'group'
     ];
 
-    // This is the most recently submitted form. It's
-    // publicly accessible, useful for callback methods.
-    var last_action_form = null;
 
-    // This triggers logging.
-    var verbose = true;
+    // This is the most recently submitted form. It's publicly
+    // accessible, useful for callback methods.
+    var last_form_called = null;
 
 
 
-    function log(message) {
-        if (verbose) {
-            console.log(message);
+    function stopSubmitEvent() {
+        if ((window.event) && (window.event.type == 'submit')) {
+            window.event.preventDefault();
         }
     }
 
 
 
-    function checkSubmitEvent() {
-        if (window.event.type == 'submit') {
-            window.event.preventDefault();
+    function getFormFromEvent(evt) {
+        var event = (evt) ? evt : window.event;
+        var elem = event.target || event.srcElement;
+        var form = Utils.getNearestParent(elem, 'form');
+        return form;
+    }
+
+
+
+    function handleAction(form) {
+        if ((func = form.getAttribute(conf.elem_attr_trigger)) &&
+            (winf = Utils.stringToFunction(func)) &&
+            (typeof winf == 'function')) {
+            last_form_called = form;
+            winf(form);
+        }
+
+        else {
+            // Same as the above.
+            console.log("The form's `action` attribute doesn't name a function callable by Informer.");
         }
     }
 
@@ -132,12 +191,12 @@ var Informer = (function () {
             (method = form.getAttribute('method'))) {
             // This will return false if the parameter doesn't name
             //  a function, which is an acceptable callback parameter.
-            var func = (chk = form.getAttribute(conf.elem_callback_attr))
-                ? stringToFunction(chk)
+            var func = (chk = form.getAttribute(conf.elem_attr_callback))
+                ? Utils.stringToFunction(chk)
                 : null;
 
             var vals = toObject(form, conf.data_transform_func);
-            last_action_form = form;
+            last_form_called = form;
 
             Http[method]({
                 url: url,
@@ -154,32 +213,14 @@ var Informer = (function () {
 
 
 
-    function handleAction(form) {
-        if ((func = form.getAttribute(conf.elem_trigger_attr)) &&
-            (winf = stringToFunction(func)) &&
-            (typeof winf == 'function')) {
-            last_action_form = form;
-            winf(form);
-        }
-
-        else {
-            // Same as the above.
-            console.log("The form's `action` attribute doesn't name a function callable by Informer.");
-        }
-    }
-
-
-
     function toObject(form, transform) {
         var vals = { };
-        var key = ((k = form.getAttribute('name')) || (k = form.getAttribute('id'))) || conf.unnamed_form_key;
+        var key = ((k = form.getAttribute('name')) || (k = form.getAttribute('id'))) ||
+            conf.unnamed_form_key;
 
-        if (typeof transform == 'function') {
-            var valobj = transform(gatherTheValues(form));
-        }
-        else {
-            var valobj = gatherTheValues(form);
-        }
+        var valobj = (typeof transform == 'function')
+            ? transform(gatherTheValues(form))
+            : gatherTheValues(form);
 
         if (key) {
             vals[key] = valobj;
@@ -194,7 +235,7 @@ var Informer = (function () {
 
 
     function gatherTheValues(form) {
-        last_action_form = form;
+        last_form_called = form;
         return groupValues(elemsToObjs(form));
     }
 
@@ -210,47 +251,12 @@ var Informer = (function () {
             }
         }
 
-        log("The form's value objects:");
-        log(vals);
-
-        return vals;
-    }
-
-
-
-    // Pass this an array of returns from `elemsToObjs`.
-    function groupValues(val_objs) {
-        log("Grouping values:");
-        log(val_objs);
-
-        var vals_struct = { };
-
-        for (var o = 0, m = val_objs.length; o < m; o++) {
-            if (group_str = val_objs[o]['group']) {
-                log("'"+val_objs[o]['name']+"' group string: " + group_str);
-
-                var form_val = { };
-                form_val[val_objs[o]['name']] = val_objs[o]['value'];
-
-                var val_struct = buildNestedObject(group_str.split(':'),
-                                                   form_val);
-
-                log("Built nested object:");
-                log(val_struct);
-
-                vals_struct = mergeObjects(vals_struct, val_struct);
-            }
-
-            else {
-                log("'"+val_objs[o]['name']+"' has no group, adding its value to the structure base.");
-                vals_struct[val_objs[o]['name']] = val_objs[o]['value'];
-            }
+        if (verbose) {
+            console.log("The form's value objects:");
+            console.log(vals);
         }
 
-        log("Structured values:");
-        log(vals_struct);
-
-        return vals_struct;
+        return vals;
     }
 
 
@@ -258,8 +264,10 @@ var Informer = (function () {
     function elemToObject(elem, attrs) {
         attrs = (typeof attrs == 'undefined') ? value_attributes : attrs;
 
-        log("Converting element to value object:");
-        log(elem);
+        if (verbose) {
+            console.log("Converting element to value object:");
+            console.log(elem);
+        }
 
         var obj = { };
         obj['value'] = elem.value;
@@ -268,109 +276,60 @@ var Informer = (function () {
             obj[attrs[o]] = elem.getAttribute(attrs[o]) || false;
         }
 
-        log("Built value object:");
-        log(obj);
+        if (verbose) {
+            console.log("Built value object:");
+            console.log(obj);
+        }
 
         return obj;
     }
 
 
 
-    /*
-     * These functions are essential to Informer but
-     * might be useful as general utility functions.
-     */
-
-    // This is a modified version of the procedure found here:
-    // http://stackoverflow.com/questions/912596/how-to-turn-a-string-into-a-javascript-function-call
-    // Rather than produce a callable function and then call it with supplied arguments,
-    // this just returns the function.
-    function stringToFunction(functionName, context) {
-        context = (typeof context == 'undefined') ? window : context;
-
-        var namespaces = functionName.split('.');
-        var func = namespaces.pop();
-
-        for (var o = 0, m = namespaces.length; o < m; o++) {
-            context = context[namespaces[o]];
+    // Pass this an array of returns from `elemsToObjs`.
+    function groupValues(val_objs) {
+        if (verbose) {
+            console.log("Grouping values:");
+            console.log(val_objs);
         }
 
-        if (typeof context[func] == 'function') {
-            return context[func];
-        }
-        else {
-            return false;
-        }
-    }
+        var vals_struct = { };
 
-
-
-    function buildNestedObject(keys, end_val) {
-        var ret = { };
-
-        if (keys.length == 1) {
-            if (keys[0] in ret) {
-                if (!(typeof end_val == 'undefined')) {
-                    if (end_val.constructor == Object) {
-                        ret[keys[0]] = mergeObjects(ret[keys[0]], end_val);
-                    }
-                    else {
-                        ret[keys[0]] = end_val;
-                    }
+        for (var o = 0, m = val_objs.length; o < m; o++) {
+            if (group_str = val_objs[o]['group']) {
+                if (verbose) {
+                    console.log("'"+val_objs[o]['name']+"' group string: " + group_str);
                 }
+
+                var form_val = { };
+                form_val[val_objs[o]['name']] = val_objs[o]['value'];
+
+                var val_struct = Utils.buildNestedObject(group_str.split(':'),
+                                                         form_val);
+
+                if (verbose) {
+                    console.log("Built nested object:");
+                    console.log(val_struct);
+                }
+
+                vals_struct = Utils.mergeObjects(vals_struct, val_struct);
             }
+
             else {
-                ret[keys[0]] = (typeof end_val == 'undefined') ? { } : end_val;
-            }
-        }
-        else {
-            ret[keys[0]] = buildNestedObject(keys.slice(1), end_val);
-        }
-
-        return ret;
-    }
-
-
-
-    function mergeObjects(obj1, obj2) {
-        for (var key in obj2) {
-            if (obj2.hasOwnProperty(key)) {
-                if ((obj1[key]) &&
-                    (obj1[key].constructor == Object) &&
-                    (obj2[key].constructor == Object)) {
-                    obj1[key] = mergeObjects(obj1[key], obj2[key]);
+                if (verbose) {
+                    console.log("'"+val_objs[o]['name']+"' has no group, adding its value to the structure base.");
                 }
-                else {
-                    obj1[key] = obj2[key];
-                }
+
+                vals_struct[val_objs[o]['name']] = val_objs[o]['value'];
             }
         }
 
-        return obj1;
-    }
-
-
-
-    function getFormFromEvent(evt) {
-        var event = (evt) ? evt : window.event;
-        var elem = event.target || event.srcElement;
-        var form = getNearestParent(elem, 'form');
-        return form;
-    }
-
-
-
-    function getNearestParent(source, tagname) {
-        var elem = source;
-
-        while ((!elem.tagName) ||
-               ((elem.tagName.toLowerCase() != tagname) &&
-                (elem != document.body))) {
-            elem = elem.parentNode;
+        if (verbose) {
+            console.log("Structured values:");
+            console.log(vals_struct);
         }
 
-        if (elem == document.body) {return false;}
-        else {return elem;}
+        return vals_struct;
     }
 
 
@@ -380,15 +339,15 @@ var Informer = (function () {
     /*
      * Public methods.
      */
-    return {
 
+    return {
         collect: function(form) {
-            checkSubmitEvent();
+            stopSubmitEvent();
             return gatherTheValues(form);
         },
 
         submit: function(form) {
-            checkSubmitEvent();
+            stopSubmitEvent();
             handleSubmission(form);
         },
 
@@ -402,9 +361,8 @@ var Informer = (function () {
         },
 
         form: function() {
-            return last_action_form;
+            return last_form_called;
         }
-
     }
 
 })();
