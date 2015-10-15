@@ -111,6 +111,10 @@ var Informer = (function () {
     var verbose = false;
 
 
+
+    // This is the default configuration. These settings can be
+    // modified any time by passing an object with these keys to the
+    // public `setConf` method.
     var conf = {
         // Instead of sending the form data to the server, it can be
         // sent to a function. If you want to do that, then the form
@@ -121,6 +125,10 @@ var Informer = (function () {
         // server's return. If you want to do that, then the form
         // should name the function to call in this attribute.
         elem_attr_callback: 'onreturn',
+
+        // If a form element has this attribute, then its value will
+        // not be reset when the form is cleared.
+        elem_attr_fixed: 'disabled',
 
         // If you want to transform the form data before sending it,
         // make this a function name. If not, make it false.
@@ -133,10 +141,19 @@ var Informer = (function () {
     };
 
 
+
+    // If configuration settings are updated via `setConf`, then
+    // this will become a backup of the defaults, which can then be
+    // reinstated later.
+    var conf_bk = null;
+
+
+
     // These are the `tagName`s to scan for in the form.
     var input_types = [
         'input', 'select', 'textarea'
     ];
+
 
 
     // These are the attributes to pull from the elements. They will
@@ -147,9 +164,52 @@ var Informer = (function () {
     ];
 
 
+
     // This is the most recently submitted form. It's publicly
     // accessible, useful for callback methods.
     var last_form_called = null;
+
+
+
+    function makeNewConf(conf_obj) {
+        if (verbose) {
+            console.log("Pulling new config settings from:");
+            console.log(conf_obj);
+        }
+
+        conf_bk = conf;
+
+        var new_conf = Utils.sieve(conf, conf_obj);
+
+        if (verbose) {
+            console.log("New config settings:");
+            console.log(new_conf);
+        }
+
+        conf = new_conf;
+        return conf;
+    }
+
+
+
+    function resetConfToDefault() {
+        if (conf_bk) {
+            if (verbose) {
+                console.log("Resetting config to default.");
+            }
+
+            conf = conf_bk;
+            conf_bk = null;
+        }
+
+        else {
+            if (verbose) {
+                console.log("Would reset config to default but there is no backup of the defaults.");
+            }
+        }
+
+        return conf;
+    }
 
 
 
@@ -334,6 +394,24 @@ var Informer = (function () {
 
 
 
+    function clearFormValues(form) {
+        if (verbose) {
+            console.log("Clearing form values, keeping '"+conf.elem_attr_fixed+"'.");
+        }
+
+        for (var o = 0, m = input_types.length; o < m; o++) {
+            var elems = form.getElementsByTagName(input_types[o]);
+
+            for (var i = 0, n = elems.length; i < n; i++) {
+                if (!elems[i].hasAttribute(conf.elem_attr_fixed)) {
+                    elems[1].value = '';
+                }
+            }
+        }
+    }
+
+
+
 
 
     /*
@@ -356,12 +434,24 @@ var Informer = (function () {
             if (form) {handleAction(form);}
         },
 
+        clear: function(form) {
+            clearFormValues(form);
+        },
+
         tagnames: function() {
             return input_types;
         },
 
         form: function() {
             return last_form_called;
+        },
+
+        setConf: function(new_conf) {
+            return makeNewConf(new_conf);
+        },
+
+        resetConf: function() {
+            return resetConfToDefault();
         }
     }
 
