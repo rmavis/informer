@@ -107,11 +107,6 @@
 
 var Informer = (function () {
 
-    // For logging.
-    var verbose = false;
-
-
-
     // This is the default configuration. These settings can be
     // modified any time by passing an object with these keys to the
     // public `setConf` method.
@@ -137,7 +132,10 @@ var Informer = (function () {
         // If the form has no `name` or `id`, then this will become
         // the key for the transformed data object. If false, no key
         // will be used.
-        unnamed_form_key: null
+        unnamed_form_key: null,
+
+        // For logging.
+        log: false
     };
 
 
@@ -172,7 +170,7 @@ var Informer = (function () {
 
 
     function makeNewConf(conf_obj) {
-        if (verbose) {
+        if (conf.log) {
             console.log("Pulling new config settings from:");
             console.log(conf_obj);
         }
@@ -181,7 +179,7 @@ var Informer = (function () {
 
         var new_conf = Utils.sieve(conf, conf_obj);
 
-        if (verbose) {
+        if (conf.log) {
             console.log("New config settings:");
             console.log(new_conf);
         }
@@ -194,7 +192,7 @@ var Informer = (function () {
 
     function resetConfToDefault() {
         if (conf_bk) {
-            if (verbose) {
+            if (conf.log) {
                 console.log("Resetting config to default.");
             }
 
@@ -203,7 +201,7 @@ var Informer = (function () {
         }
 
         else {
-            if (verbose) {
+            if (conf.log) {
                 console.log("Would reset config to default but there is no backup of the defaults.");
             }
         }
@@ -224,7 +222,7 @@ var Informer = (function () {
     function getFormFromEvent(evt) {
         var event = (evt) ? evt : window.event;
         var elem = event.target || event.srcElement;
-        var form = Utils.getNearestParent(elem, 'form');
+        var form = Utils.getNearestParentByTagname(elem, 'form');
         return form;
     }
 
@@ -266,7 +264,7 @@ var Informer = (function () {
         }
 
         else {
-            // If `verbose` is false, then this will silently fail, and that is the suck.
+            // If `conf.log` is false, then this will silently fail, and that is the suck.
             console.log("To submit, the form element needs these attributes: `action`, being the URL to send the data to, and `method`, being the HTTP verb to use, either 'get' or 'post'");
         }
     }
@@ -311,7 +309,7 @@ var Informer = (function () {
             }
         }
 
-        if (verbose) {
+        if (conf.log) {
             console.log("The form's value objects:");
             console.log(vals);
         }
@@ -324,7 +322,7 @@ var Informer = (function () {
     function elemToObject(elem, attrs) {
         attrs = (typeof attrs == 'undefined') ? value_attributes : attrs;
 
-        if (verbose) {
+        if (conf.log) {
             console.log("Converting element to value object:");
             console.log(elem);
         }
@@ -336,7 +334,7 @@ var Informer = (function () {
             obj[attrs[o]] = elem.getAttribute(attrs[o]) || false;
         }
 
-        if (verbose) {
+        if (conf.log) {
             console.log("Built value object:");
             console.log(obj);
         }
@@ -348,7 +346,7 @@ var Informer = (function () {
 
     // Pass this an array of returns from `elemsToObjs`.
     function groupValues(val_objs) {
-        if (verbose) {
+        if (conf.log) {
             console.log("Grouping values:");
             console.log(val_objs);
         }
@@ -357,7 +355,7 @@ var Informer = (function () {
 
         for (var o = 0, m = val_objs.length; o < m; o++) {
             if (group_str = val_objs[o]['group']) {
-                if (verbose) {
+                if (conf.log) {
                     console.log("'"+val_objs[o]['name']+"' group string: " + group_str);
                 }
 
@@ -367,7 +365,7 @@ var Informer = (function () {
                 var val_struct = Utils.buildNestedObject(group_str.split(':'),
                                                          form_val);
 
-                if (verbose) {
+                if (conf.log) {
                     console.log("Built nested object:");
                     console.log(val_struct);
                 }
@@ -376,7 +374,7 @@ var Informer = (function () {
             }
 
             else {
-                if (verbose) {
+                if (conf.log) {
                     console.log("'"+val_objs[o]['name']+"' has no group, adding its value to the structure base.");
                 }
 
@@ -384,7 +382,7 @@ var Informer = (function () {
             }
         }
 
-        if (verbose) {
+        if (conf.log) {
             console.log("Structured values:");
             console.log(vals_struct);
         }
@@ -395,7 +393,7 @@ var Informer = (function () {
 
 
     function clearFormValues(form) {
-        if (verbose) {
+        if (conf.log) {
             console.log("Clearing form values, keeping '"+conf.elem_attr_fixed+"'.");
         }
 
