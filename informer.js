@@ -248,7 +248,7 @@ var Informer = (function () {
         if ((url = form.getAttribute('action')) &&
             (method = form.getAttribute('method'))) {
             // This will return false if the parameter doesn't name
-            //  a function, which is an acceptable callback parameter.
+            // a function, which is an acceptable callback parameter.
             var func = (chk = form.getAttribute(conf.elem_attr_callback))
                 ? Utils.stringToFunction(chk)
                 : null;
@@ -267,6 +267,63 @@ var Informer = (function () {
             // If `conf.log` is false, then this will silently fail, and that is the suck.
             console.log("To submit, the form element needs these attributes: `action`, being the URL to send the data to, and `method`, being the HTTP verb to use, either 'get' or 'post'");
         }
+    }
+
+
+
+    function handleUpload(form) {
+        if (conf.log) {
+            console.log("Handling file upload.");
+        }
+
+        var frame_name = ''+new Date().getTime()+'_upload';
+        form.setAttribute('target', frame_name);
+
+        var iframe = Utils.makeElement(
+            'iframe',
+            {name: frame_name,
+             style: 'position: absolute; top: -9000px; left: -9000px; height: 0; width: 0; overflow: hidden; visibility: hidden;'}
+        );
+
+        document.body.appendChild(iframe);
+
+        var callback = Utils.stringToFunction(form.getAttribute(conf.elem_attr_callback)) || null;
+
+        function pollIframe() {
+            if (conf.log) {
+                console.log("Polling hidden iframe for submission return.");
+            }
+
+            var bod = false;
+
+            if (iframe.contentDocument) {
+                bod = iframe.contentDocument.body.innerHTML;
+            }
+            else if (iframe.contentWindow) {
+                bod = iframe.contentWindow.document.body.innerHTML;
+            }
+
+            if (bod) {
+                document.body.removeChild(iframe);
+
+                if (callback) {
+                    if (conf.log) {
+                        console.log("Sending return to callback.");
+                    }
+
+                    callback(bod);
+                }
+
+                else {return bod;}
+            }
+
+            else {window.setTimeout(pollIframe, 500);}
+        }
+
+        form.submit();
+        pollIframe();
+
+        return form;
     }
 
 
@@ -430,6 +487,11 @@ var Informer = (function () {
         trigger: function(evt) {
             var form = getFormFromEvent(evt);
             if (form) {handleAction(form);}
+        },
+
+        upload: function(form) {
+            stopSubmitEvent();
+            return handleUpload(form);
         },
 
         clear: function(form) {
