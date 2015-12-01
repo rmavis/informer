@@ -271,57 +271,36 @@ var Informer = (function () {
 
 
 
-    function handleUpload(form) {
+    function handleUpload(elem) {
         if (conf.log) {
-            console.log("Handling file upload.");
+            console.log("Handling file upload:");
+            console.log(elem);
         }
 
-        var frame_name = ''+new Date().getTime()+'_upload';
-        form.setAttribute('target', frame_name);
+        var form = Utils.getNearestParentByTagname(elem, 'form');
 
-        var iframe = Utils.makeElement(
-            'iframe',
-            {name: frame_name,
-             style: 'position: absolute; top: -9000px; left: -9000px; height: 0; width: 0; overflow: hidden; visibility: hidden;'}
-        );
+        // This method of handling form submission is not universally
+        // supported. See:  #HERE
+        // https://developer.mozilla.org/en-US/docs/Web/API/FormData
+        // http://caniuse.com/#search=FormData
+        // Also, in the console the object will appear empty.
+        var form_data = new FormData();
+        form_data.append(elem.getAttribute('name'), elem.files[0]);
 
-        document.body.appendChild(iframe);
+        var callback = Utils.stringToFunction(elem.getAttribute(conf.elem_attr_callback)) || null;
 
-        var callback = Utils.stringToFunction(form.getAttribute(conf.elem_attr_callback)) || null;
+        Http.post({
+            url: form.getAttribute('action'),
+            raw_data: form_data,
+            callback: callback,
+            verbose: true
+        });
 
-        function pollIframe() {
-            if (conf.log) {
-                console.log("Polling hidden iframe for submission return.");
-            }
-
-            var bod = false;
-
-            if (iframe.contentDocument) {
-                bod = iframe.contentDocument.body.innerHTML;
-            }
-            else if (iframe.contentWindow) {
-                bod = iframe.contentWindow.document.body.innerHTML;
-            }
-
-            if (bod) {
-                document.body.removeChild(iframe);
-
-                if (callback) {
-                    if (conf.log) {
-                        console.log("Sending return to callback.");
-                    }
-
-                    callback(bod);
-                }
-
-                else {return bod;}
-            }
-
-            else {window.setTimeout(pollIframe, 500);}
-        }
-
-        form.submit();
-        pollIframe();
+        // NOTE: this will make the public `form` method not return
+        // a form. But it will be the last called form-like thing.
+        // And it serves the purpose of being useful for callbacks.
+        // Just be aware.
+        last_form_called = elem;
 
         return form;
     }
@@ -489,9 +468,9 @@ var Informer = (function () {
             if (form) {handleAction(form);}
         },
 
-        upload: function(form) {
-            stopSubmitEvent();
-            return handleUpload(form);
+        upload: function(elem) {
+            // stopSubmitEvent();
+            return handleUpload(elem);
         },
 
         clear: function(form) {
