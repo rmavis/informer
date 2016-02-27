@@ -99,9 +99,10 @@ will generate:
 }
 ```
 
-If the form has an `onreturn` attribute (that name is set by the
-value of `conf.elem_attr_callback`), then after it is submitted,
-the server's return will be passed to that function.
+If the form has an `onreturn` attribute, then after it is submitted,
+the server's return will be passed to the function named in that
+attribute. (If you don't like that attribute name, you can change it
+in the configuration object.)
 
 There are ten public methods: `collect`, `submit`, `trigger`,
 `upload`, `partial`, `clear`, `tagnames`,  `form`, `setConf`, and
@@ -118,7 +119,7 @@ passed to that before submitting.
 The `trigger` method will parse the form, build a data object,
 and pass that object to the function named in the form's `action`
 attribute (if you'd like, you can specify a different attribute
-name in `conf.elem_attr_trigger`).
+name in the configuration object).
 
 The `upload` method will upload a file.
 
@@ -131,6 +132,8 @@ from the form and the last form read, respectively.
 
 The `setConf` and `resetConf` methods set the configuration object
 and rest the configuration to the default, respectively.
+
+For more information, read the documentation.
 
 
 ## Todo
