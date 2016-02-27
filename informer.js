@@ -107,65 +107,70 @@
 
 var Informer = (function () {
 
+
     // This is the default configuration. These settings can be
     // modified any time by passing an object with these keys to the
     // public `setConf` method.
-    var conf = {
-        // Instead of sending the form data to the server, it can be
-        // sent to a function. If you want to do that, then the form
-        // should name the function to call in this attribute.
-        elem_attr_trigger: 'action',
+    function getDefaultConf() {
+        return {
+            // Instead of sending the form data to the server, it can be
+            // sent to a function. If you want to do that, then the form
+            // should name the function to call in this attribute.
+            elem_attr_trigger: 'action',
 
-        // After the form submits, a function can be called with the
-        // server's return. If you want to do that, then the form
-        // should name the function to call in this attribute.
-        elem_attr_callback: 'onreturn',
+            // After the form submits, a function can be called with the
+            // server's return. If you want to do that, then the form
+            // should name the function to call in this attribute.
+            elem_attr_callback: 'onreturn',
 
-        // If a form element has this attribute, then its value will
-        // not be reset when the form is cleared.
-        elem_attr_fixed: 'disabled',
+            // If a form element has this attribute, then its value will
+            // not be reset when the form is cleared.
+            elem_attr_fixed: 'disabled',
 
-        // If you want to transform the form data before sending it,
-        // make this a function name. If not, make it false.
-        data_transform_func: JSON.stringify,
+            // If you want to transform the form data before sending it,
+            // make this a function name. If not, make it false.
+            data_transform_func: JSON.stringify,
 
-        // If the form has no `name` or `id`, then this will become
-        // the key for the transformed data object. If false, no key
-        // will be used.
-        unnamed_form_key: null,
+            // If the form has no `name` or `id`, then this will become
+            // the key for the transformed data object. If false, no key
+            // will be used.
+            unnamed_form_key: null,
 
-        // For logging.
-        log: false
-    };
+            // This is the key to use for sending parameterized data.
+            http_key_params: 'params',
 
+            // This is the key to use for sending FormData data.
+            http_key_raw_data: 'raw_data',
 
-
-    // If configuration settings are updated via `setConf`, then
-    // this will become a backup of the defaults, which can then be
-    // reinstated later.
-    var conf_bk = null;
-
-
-
-    // These are the `tagName`s to scan for in the form.
-    var input_types = [
-        'input', 'select', 'textarea'
-    ];
+            // For logging.
+            log: false
+        }
+    }
 
 
 
-    // These are the attributes to pull from the elements. They will
-    // become keys to the element's value object. The `value` is
-    // assumed and doesn't need to be included.
-    var value_attributes = [
-        'name', 'group'
-    ];
+    var conf = getDefaultConf(),
 
+        // If configuration settings are updated via `setConf`, then
+        // this will become a backup of the defaults, which can then be
+        // reinstated later.
+        conf_bk = null,
 
+        // These are the `tagName`s to scan for in the form.
+        input_types = [
+            'input', 'select', 'textarea'
+        ],
 
-    // This is the most recently submitted form. It's publicly
-    // accessible, useful for callback methods.
-    var last_form_called = null;
+        // These are the attributes to pull from the elements. They will
+        // become keys to the element's value object. The `value` is
+        // assumed and doesn't need to be included.
+        value_attributes = [
+            'name', 'group'
+        ],
+
+        // This is the most recently submitted form. It's publicly
+        // accessible, useful for callback methods.
+        last_form_called = null;
 
 
 
@@ -244,7 +249,7 @@ var Informer = (function () {
 
 
 
-    function handleSubmission(form) {
+    function handleSubmission(form, vals) {
         if ((url = form.getAttribute('action')) &&
             (method = form.getAttribute('method'))) {
             // This will return false if the parameter doesn't name
@@ -253,14 +258,29 @@ var Informer = (function () {
                 ? Utils.stringToFunction(chk)
                 : null;
 
-            var vals = toObject(form, conf.data_transform_func);
+            var send_obj = {
+                callback: func,
+                url: url,
+                verbose: true
+            };
+
+            var val_key = conf.http_key_params;
+
+            if (typeof vals == 'undefined') {
+                vals = toObject(form, conf.data_transform_func);
+            }
+            else if ((typeof vals == 'object') && (vals.constructor == FormData)) {
+                val_key = conf.http_key_raw_data;
+            }
+            else {
+                // What #HERE?
+            }
+
+            send_obj[val_key] = vals;
+
             last_form_called = form;
 
-            Http[method]({
-                url: url,
-                params: vals,
-                callback: func
-            });
+            Http[method](send_obj);
         }
 
         else {
@@ -271,38 +291,51 @@ var Informer = (function () {
 
 
 
-    function handleUpload(elem) {
+    function handleUpload(form) {
         if (conf.log) {
-            console.log("Handling file upload:");
-            console.log(elem);
+            console.log("Handling file upload from form partial:");
+            console.log(form);
         }
 
-        var form = Utils.getNearestParentByTagname(elem, 'form');
+        var form_data = buildFormDataObj(
+            form.getElementsByTagName('input'),
 
-        // This method of handling form submission is not universally
-        // supported. See:  #HERE
-        // https://developer.mozilla.org/en-US/docs/Web/API/FormData
-        // http://caniuse.com/#search=FormData
-        // Also, in the console the object will appear empty.
-        var form_data = new FormData();
-        form_data.append(elem.getAttribute('name'), elem.files[0]);
+            // In this instance, all the elements are wanted.
+            (function (elem) {return true;}),
 
-        var callback = Utils.stringToFunction(elem.getAttribute(conf.elem_attr_callback)) || null;
+            (function (elem) {
+                if ((type = elem.getAttribute('type')) &&
+                    (type == 'file')) {
+                    return elem.files[0];
+                }
+                else {
+                    return elem.value;
+                }
+            })
+        );
 
-        Http.post({
-            url: form.getAttribute('action'),
-            raw_data: form_data,
-            callback: callback,
-            verbose: true
-        });
+        handleSubmission(form, form_data);
 
         // NOTE: this will make the public `form` method not return
         // a form. But it will be the last called form-like thing.
         // And it serves the purpose of being useful for callbacks.
         // Just be aware.
-        last_form_called = elem;
+        // last_form_called = form;
 
         return form;
+    }
+
+
+
+    function submitPartial(elem) {
+        if (conf.log) {
+            console.log("Submitting form partial:");
+            console.log(elem);
+        }
+
+        handleSubmission(elem);
+
+        return elem;
     }
 
 
@@ -428,6 +461,26 @@ var Informer = (function () {
 
 
 
+    // This method of handling form submission is not universally
+    // supported. See:  #HERE
+    // https://developer.mozilla.org/en-US/docs/Web/API/FormData
+    // http://caniuse.com/#search=FormData
+    // Also, in the console the object will appear empty.
+    function buildFormDataObj(inputs, shouldKeep, transform) {
+        var vals = new FormData();
+
+        for (var o = 0, m = inputs.length; o < m; o++) {
+            if (shouldKeep(inputs[o])) {
+                vals.append(inputs[o].getAttribute('name'),
+                            transform(inputs[o]));
+            }
+        }
+
+        return vals;
+    }
+
+
+
     function clearFormValues(form) {
         if (conf.log) {
             console.log("Clearing form values, keeping '"+conf.elem_attr_fixed+"'.");
@@ -469,8 +522,11 @@ var Informer = (function () {
         },
 
         upload: function(elem) {
-            // stopSubmitEvent();
             return handleUpload(elem);
+        },
+
+        partial: function(elem) {
+            return submitPartial(elem);
         },
 
         clear: function(form) {
